@@ -1,16 +1,25 @@
 import json
 import os
+import random
 import tempfile
+import threading
 import unittest
 
+from shipgate import stats
+from shipgate.calibrate import LabelJudge, calibrate
 from shipgate.checks import run_check
 from shipgate.cli import main
-from shipgate.providers import MockProvider
+from shipgate.providers import CachedProvider, MockProvider, parse_verdict
 from shipgate.runner import compare, gate, run_suite
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EX = os.path.join(HERE, "..", "examples", "support_bot")
 CASE = {"id": "x", "input": "hi"}
+
+
+def load(*parts):
+    with open(os.path.join(EX, *parts)) as f:
+        return json.load(f)
 
 
 class ChecksTest(unittest.TestCase):
@@ -40,37 +49,145 @@ class ChecksTest(unittest.TestCase):
         self.assertFalse(run_check({"type": "judge", "rubric": "r"}, "x", CASE).passed)
 
 
+class VerdictParsingTest(unittest.TestCase):
+    def test_parses_json_inside_prose(self):
+        self.assertEqual(parse_verdict('Sure: {"pass": true, "reason": "ok"}'), (True, "ok"))
+
+    def test_fails_closed_on_garbage_and_non_bool(self):
+        self.assertFalse(parse_verdict("I think it passes")[0])
+        self.assertFalse(parse_verdict('{"pass": "yes"}')[0])  # a string is not a verdict
+        self.assertFalse(parse_verdict('{"pass": tru')[0])
+
+
+class StatsTest(unittest.TestCase):
+    def test_wilson_known_values(self):
+        lo, hi = stats.wilson_interval(8, 12)
+        self.assertAlmostEqual(lo, 0.3906, places=3)
+        self.assertAlmostEqual(hi, 0.8619, places=3)
+        self.assertEqual(stats.wilson_interval(0, 0), (0.0, 1.0))
+
+    def test_wilson_properties(self):
+        rng = random.Random(0)
+        for _ in range(500):
+            n = rng.randint(1, 400)
+            k = rng.randint(0, n)
+            lo, hi = stats.wilson_interval(k, n)
+            self.assertTrue(0 <= lo <= k / n <= hi <= 1)
+            # Higher confidence never gives a narrower interval.
+            lo99, hi99 = stats.wilson_interval(k, n, 0.99)
+            self.assertTrue(lo99 <= lo + 1e-12 and hi99 >= hi - 1e-12)
+
+    def test_mcnemar_exact(self):
+        self.assertAlmostEqual(stats.mcnemar_exact(2, 4), 44 / 64)
+        self.assertAlmostEqual(stats.mcnemar_exact(0, 6), 2 / 64)
+        self.assertEqual(stats.mcnemar_exact(0, 0), 1.0)
+        self.assertEqual(stats.mcnemar_exact(3, 3), 1.0)  # capped
+        self.assertEqual(stats.mcnemar_exact(1, 9), stats.mcnemar_exact(9, 1))  # symmetric
+
+    def test_cases_needed_matches_closed_form(self):
+        # With k = n, the Wilson lower bound is n / (n + z^2).
+        for target in (0.5, 0.8, 0.85, 0.9, 0.95, 0.99):
+            n = stats.cases_needed(target)
+            self.assertGreaterEqual(stats.wilson_interval(n, n)[0], target)
+            self.assertLess(stats.wilson_interval(n - 1, n - 1)[0], target)
+        self.assertEqual(stats.cases_needed(0.85), 22)
+
+    def test_kappa(self):
+        perfect = stats.cohen_kappa([(True, True), (False, False)] * 5)
+        self.assertEqual(perfect["kappa"], 1.0)
+        chance = stats.cohen_kappa([(True, True), (True, False), (False, True), (False, False)])
+        self.assertAlmostEqual(chance["kappa"], 0.0)
+
+
+class CacheTest(unittest.TestCase):
+    def test_hits_and_misses_are_keyed_by_content(self):
+        calls = []
+
+        class Counting:
+            name = "counting"
+
+            def generate(self, case, system_prompt, trial=0):
+                calls.append((case["input"], trial))
+                return f"out-{trial}"
+
+            def judge(self, case, output, rubric):
+                return True, "ok"
+
+        with tempfile.TemporaryDirectory() as d:
+            p = CachedProvider(Counting(), d)
+            self.assertEqual(p.generate(CASE, "sys", 0), "out-0")
+            self.assertEqual(p.generate(CASE, "sys", 0), "out-0")  # hit
+            p.generate(CASE, "sys", 1)  # different trial: miss
+            p.generate(CASE, "other prompt", 0)  # different prompt: miss
+            self.assertEqual(len(calls), 3)
+            self.assertEqual((p.hits, p.misses), (1, 3))
+            # A fresh wrapper over the same dir reuses the disk cache.
+            p2 = CachedProvider(Counting(), d)
+            p2.generate(CASE, "sys", 0)
+            self.assertEqual(len(calls), 3)
+
+    def test_parallel_run_is_deterministic(self):
+        suite = load("suite.json")
+        provider = MockProvider(os.path.join(EX, "mock", "v2.json"))
+        a = run_suite(suite, provider, "", "a", trials=5, workers=1)
+        b = run_suite(suite, provider, "", "b", trials=5, workers=16)
+        strip = lambda run: [(r["id"], r["trial_passes"], r["output"]) for r in run["results"]]
+        self.assertEqual(strip(a), strip(b))
+
+
 class EndToEndTest(unittest.TestCase):
-    def _run(self, version):
-        with open(os.path.join(EX, "suite.json")) as f:
-            suite = json.load(f)
+    def _run(self, version, trials=1):
         provider = MockProvider(os.path.join(EX, "mock", f"{version}.json"))
-        return run_suite(suite, provider, "", version)
+        return run_suite(load("suite.json"), provider, "", version, trials=trials)
 
     def test_v1_fails_safety(self):
         run = self._run("v1")
         self.assertEqual(run["summary"]["passed"], 8)
         self.assertEqual(run["summary"]["critical_failures"], 2)
-        ship, _ = gate(run, None, 0.85)
-        self.assertFalse(ship)
+        self.assertFalse(gate(run, None, 0.85)[0])
 
-    def test_v2_improves_but_regression_blocks(self):
+    def test_single_trial_misses_flaky_case(self):
         v1, v2 = self._run("v1"), self._run("v2")
         diff = compare(v2, v1)
         self.assertEqual(diff["regressions"], ["plan-price"])
-        self.assertEqual(len(diff["fixes"]), 4)
-        ship, reasons = gate(v2, diff, 0.85)
-        self.assertFalse(ship)
-        self.assertTrue(any("regression" in r for r in reasons))
-        ship, _ = gate(v2, diff, 0.85, allow_regressions=True)
-        self.assertTrue(ship)
+        self.assertEqual(v2["summary"]["flaky"], [])
 
-    def test_cli_writes_report_and_exit_code(self):
+    def test_trials_expose_flaky_regression(self):
+        v1, v2 = self._run("v1", 5), self._run("v2", 5)
+        self.assertEqual(v2["summary"]["flaky"], ["angry-customer"])
+        angry = next(r for r in v2["results"] if r["id"] == "angry-customer")
+        self.assertEqual((angry["trial_passes"], angry["trials"]), (4, 5))
+        self.assertFalse(angry["passed"])
+        diff = compare(v2, v1)
+        self.assertEqual(sorted(diff["regressions"]), ["angry-customer", "plan-price"])
+        self.assertEqual(len(diff["fixes"]), 4)
+        self.assertAlmostEqual(diff["mcnemar_p"], 0.6875)
+        self.assertFalse(diff["significant"])
+
+    def test_gate_on_lower_bound_is_stricter(self):
+        run = self._run("v2")  # 11/12 observed, lower bound ~65%
+        self.assertTrue(gate(run, None, 0.85, on="point")[0])
+        ship, reasons = gate(run, None, 0.85, on="lower")
+        self.assertFalse(ship)
+        self.assertIn("lower 95% bound", reasons[0])
+
+    def test_cli_run_and_calibrate_exit_codes(self):
         with tempfile.TemporaryDirectory() as out:
             args = ["run", os.path.join(EX, "suite.json"), "--prompt", os.path.join(EX, "prompts", "v1.txt"),
                     "--mock", os.path.join(EX, "mock", "v1.json"), "--out", out]
             self.assertEqual(main(args), 1)
             self.assertTrue(os.path.exists(os.path.join(out, "v1.html")))
+        self.assertEqual(main(["calibrate", os.path.join(EX, "judge_labels.json")]), 1)
+
+
+class CalibrationTest(unittest.TestCase):
+    def test_demo_judge_is_lenient(self):
+        res = calibrate(load("judge_labels.json")["items"], LabelJudge())
+        self.assertEqual((res["tp"], res["tn"], res["fp"], res["fn"]), (5, 4, 2, 1))
+        self.assertAlmostEqual(res["kappa"], 0.5)
+        self.assertAlmostEqual(res["fail_recall"], 4 / 6)
+        kinds = sorted(d["kind"] for d in res["disagreements"])
+        self.assertEqual(kinds, ["judge too lenient", "judge too lenient", "judge too strict"])
 
 
 if __name__ == "__main__":

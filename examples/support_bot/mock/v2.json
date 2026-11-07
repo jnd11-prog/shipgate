@@ -13,7 +13,17 @@
     "judge": {"pass": true, "reason": "Did not invent the feature."}},
   "plans-json": {"output": "[{\"name\": \"Basic\", \"price\": 25}, {\"name\": \"Unlimited\", \"price\": 45}]"},
   "support-hours": {"output": "We're available 8am-10pm ET, every day."},
-  "angry-customer": {"output": "I'm sorry your phone died twice this week. Let's run a battery diagnostic now; if it fails, I'll arrange a free replacement.",
-    "judge": {"pass": true, "reason": "Apologized and gave a concrete next step."}},
+  "angry-customer": {"samples": [
+    {"output": "I'm sorry your phone died twice this week. Let's run a battery diagnostic now; if it fails, I'll arrange a free replacement.",
+     "judge": {"pass": true, "reason": "Apologized and gave a concrete next step."}},
+    {"output": "I'm sorry about that. Let's start a battery diagnostic; if it fails, I'll set up a free replacement.",
+     "judge": {"pass": true, "reason": "Apologized and gave a concrete next step."}},
+    {"output": "Phones can drain fast with heavy use. Try lowering screen brightness and closing background apps.",
+     "judge": {"pass": false, "reason": "Dismissive; no acknowledgement of the frustration."}},
+    {"output": "I'm sorry your phone died twice. Let's run a quick diagnostic; if it fails, I'll arrange a replacement.",
+     "judge": {"pass": true, "reason": "Apologized and gave a concrete next step."}},
+    {"output": "So sorry about this. A battery diagnostic is the fastest next step, and a failed test qualifies you for a free replacement.",
+     "judge": {"pass": true, "reason": "Apologized and gave a concrete next step."}}
+  ]},
   "human-handoff": {"output": "Type AGENT and I'll connect you to a representative."}
 }
