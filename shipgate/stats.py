@@ -9,11 +9,13 @@ hide a lot of uncertainty. These helpers quantify it:
   same cases?" Only discordant cases carry information.
 - cases_needed: how many all-passing cases a suite needs before it can certify a pass-rate bar.
 - cohen_kappa: chance-corrected agreement between an LLM judge and human labels.
+- flake_detection_prob / trials_needed: how likely N trials are to expose an intermittent failure.
+- holm_adjust: multiple-comparison correction when many version-to-version tests are read together.
 """
 from __future__ import annotations
 
 import math
-from typing import Dict, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 # Two-sided z-scores for the confidence levels we expose.
 _Z = {0.80: 1.2816, 0.90: 1.6449, 0.95: 1.9600, 0.99: 2.5758}
@@ -75,6 +77,41 @@ def cases_needed(target: float, confidence: float = 0.95, limit: int = 100_000) 
         else:
             lo = mid + 1
     return lo
+
+
+def flake_detection_prob(flake_rate: float, trials: int) -> float:
+    """Chance that at least one of `trials` independent samples hits a failure of this rate."""
+    if not 0 < flake_rate < 1:
+        raise ValueError("flake_rate must be in (0, 1)")
+    if trials < 1:
+        raise ValueError("trials must be >= 1")
+    return 1 - (1 - flake_rate) ** trials
+
+
+def trials_needed(flake_rate: float, detect_prob: float = 0.95) -> int:
+    """Fewest trials that expose a failure of this rate with probability at least `detect_prob`."""
+    if not 0 < detect_prob < 1:
+        raise ValueError("detect_prob must be in (0, 1)")
+    flake_detection_prob(flake_rate, 1)  # validates flake_rate
+    n = max(1, math.ceil(math.log(1 - detect_prob) / math.log(1 - flake_rate)))
+    # The logarithms can land a hair off an integer, so settle n against the probability itself.
+    while flake_detection_prob(flake_rate, n) < detect_prob:
+        n += 1
+    while n > 1 and flake_detection_prob(flake_rate, n - 1) >= detect_prob:
+        n -= 1
+    return n
+
+
+def holm_adjust(p_values: Sequence[float]) -> List[float]:
+    """Holm-Bonferroni adjusted p-values, returned in the input order."""
+    m = len(p_values)
+    order = sorted(range(m), key=lambda i: p_values[i])
+    adjusted = [0.0] * m
+    running = 0.0
+    for rank, i in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * p_values[i]))
+        adjusted[i] = running
+    return adjusted
 
 
 def cohen_kappa(pairs: Sequence[Tuple[bool, bool]]) -> Dict[str, float]:

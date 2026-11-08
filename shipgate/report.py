@@ -87,6 +87,11 @@ def _stats_notes(run: Dict[str, Any], diff: Optional[Dict[str, Any]]) -> str:
     if s["flaky"]:
         notes.append(f"Flaky (passed some trials, failed others): {escape(', '.join(s['flaky']))}. "
                      "A single-sample eval would have missed these.")
+    flake = g.get("flake")
+    if flake and run.get("trials", 1) < flake["trials_needed"]:
+        notes.append(f"{run.get('trials', 1)} trial(s) per case would catch a behavior that fails "
+                     f"{flake['rate']:.0%} of the time with {flake['detect_prob']:.0%} probability. "
+                     f"Reaching 95% needs {flake['trials_needed']} trials.")
     if not notes:
         return ""
     return "<h2>Statistical read</h2><ul class='notes'>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>"

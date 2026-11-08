@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shipgate"
+version = "0.2.0"
+description = "Statistically honest release gate for LLM features."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+live = ["anthropic>=0.100"]
+
+[project.scripts]
+shipgate = "shipgate.cli:main"
+
+[tool.setuptools]
+packages = ["shipgate"]

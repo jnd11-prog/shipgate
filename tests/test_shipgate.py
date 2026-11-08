@@ -9,6 +9,7 @@ from shipgate import stats
 from shipgate.calibrate import LabelJudge, calibrate
 from shipgate.checks import run_check
 from shipgate.cli import main
+from shipgate.history import build, load_runs
 from shipgate.providers import CachedProvider, MockProvider, parse_verdict
 from shipgate.runner import compare, gate, run_suite
 
@@ -188,6 +189,89 @@ class CalibrationTest(unittest.TestCase):
         self.assertAlmostEqual(res["fail_recall"], 4 / 6)
         kinds = sorted(d["kind"] for d in res["disagreements"])
         self.assertEqual(kinds, ["judge too lenient", "judge too lenient", "judge too strict"])
+
+
+class FlakePowerTest(unittest.TestCase):
+    def test_known_values(self):
+        self.assertAlmostEqual(stats.flake_detection_prob(0.2, 5), 1 - 0.8**5)
+        self.assertEqual(stats.trials_needed(0.2, 0.95), 14)
+        self.assertEqual(stats.trials_needed(0.5, 0.75), 2)  # exact boundary
+
+    def test_trials_needed_is_minimal(self):
+        rng = random.Random(7)
+        for _ in range(500):
+            f, d = rng.uniform(0.01, 0.95), rng.uniform(0.05, 0.99)
+            n = stats.trials_needed(f, d)
+            self.assertGreaterEqual(stats.flake_detection_prob(f, n), d)
+            if n > 1:
+                self.assertLess(stats.flake_detection_prob(f, n - 1), d)
+
+    def test_rejects_bad_rate(self):
+        with self.assertRaises(ValueError):
+            stats.trials_needed(0.0)
+        with self.assertRaises(ValueError):
+            stats.flake_detection_prob(1.0, 3)
+
+    def test_cli_rejects_bad_rate_before_running(self):
+        with self.assertRaises(SystemExit) as ctx:
+            main(["run", "missing.json", "--prompt", "missing.txt", "--flake-rate", "1.5"])
+        self.assertIn("flake_rate", str(ctx.exception.code))
+
+    def test_holm(self):
+        adj = stats.holm_adjust([0.01, 0.04, 0.03])
+        for got, want in zip(adj, [0.03, 0.06, 0.06]):
+            self.assertAlmostEqual(got, want)
+        self.assertEqual(stats.holm_adjust([]), [])
+        self.assertEqual(stats.holm_adjust([0.9, 0.8]), [1.0, 1.0])
+
+
+class HistoryTest(unittest.TestCase):
+    def _demo(self, out):
+        for v, baseline in (("v1", []), ("v2", ["--baseline", os.path.join(out, "v1.json")])):
+            main(["run", os.path.join(EX, "suite.json"), "--prompt", os.path.join(EX, "prompts", v + ".txt"),
+                  "--mock", os.path.join(EX, "mock", v + ".json"), "--trials", "5", "--out", out] + baseline)
+
+    def test_demo_history(self):
+        with tempfile.TemporaryDirectory() as out:
+            self._demo(out)
+            with open(os.path.join(out, "v2.json")) as f:
+                self.assertEqual(json.load(f)["gate"]["flake"]["trials_needed"], 14)
+            # Junk JSON and non-run JSON in the directory are ignored.
+            with open(os.path.join(out, "notes.json"), "w") as f:
+                f.write("{not json")
+            with open(os.path.join(out, "other.json"), "w") as f:
+                json.dump({"hello": 1}, f)
+            h, skipped = build(load_runs([os.path.join(out, "v1.json"), os.path.join(out, "v2.json")]))
+            self.assertEqual(main(["history", out]), 0)
+        self.assertEqual(skipped, [])
+        self.assertEqual([r["label"] for r in h["rows"]], ["v1", "v2"])
+        d = h["rows"][1]["diff"]
+        self.assertAlmostEqual(d["delta"], 2 / 12, places=3)
+        self.assertEqual((d["fixes"], d["regressions"]), (4, 2))
+        self.assertAlmostEqual(d["p"], 0.6875)  # one comparison, so Holm changes nothing
+        by_id = {c["id"]: c for c in h["cases"]}
+        self.assertEqual(by_id["pii-ssn"]["timeline"], [False, True])
+        self.assertEqual(by_id["plan-price"]["timeline"], [True, False])
+        self.assertEqual(by_id["plan-price"]["flips"], 1)
+        self.assertEqual(len(h["cases"]), 6)
+
+    def _run(self, label, suite, outcomes, ts):
+        results = [{"id": i, "passed": ok} for i, ok in outcomes.items()]
+        passed = sum(outcomes.values())
+        summary = {"total": len(results), "passed": passed, "pass_rate": passed / len(results),
+                   "ci": [0.0, 1.0], "flaky": []}
+        return {"label": label, "suite": suite, "timestamp": ts, "summary": summary, "results": results}
+
+    def test_new_case_and_other_suite(self):
+        runs = [self._run("a", "S", {"x": True}, "1"), self._run("zz", "Other", {"x": True}, "2"),
+                self._run("b", "S", {"x": True, "new": False}, "3")]
+        h, skipped = build(runs)
+        self.assertEqual(skipped, ["zz"])
+        self.assertEqual(h["cases"], [{"id": "new", "timeline": [None, False], "flips": 0}])
+
+    def test_no_runs_exit_code(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.assertEqual(main(["history", out]), 2)
 
 
 if __name__ == "__main__":

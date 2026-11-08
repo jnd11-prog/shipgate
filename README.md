@@ -13,9 +13,11 @@ Shipgate measures all three and turns them into a SHIP / BLOCKED decision with a
 | Problem | What Shipgate does |
 |---|---|
 | Non-deterministic model | `--trials N` samples each case N times. A case passes only if **every** trial passes, and cases with mixed results are flagged as **flaky**. |
+| Too few trials | Every run reports how likely its trial count was to expose an intermittent failure, and how many trials would reach 95%. |
 | Small suite | Wilson score confidence intervals on every pass rate. `--gate-on lower` ships only if the *lower bound* clears the bar. Each report says how many cases the bar would need. |
 | "Is v2 actually better?" | Exact **McNemar test** on paired cases: only the cases that changed outcome count as evidence. |
 | Untrusted judge | `shipgate calibrate` scores the judge against human labels: agreement, **Cohen's κ**, a confusion matrix, and *fail recall* (how many bad replies it catches). |
+| Reading many versions | `shipgate history` shows pass rates with intervals across versions, Holm-adjusted p-values, and every case that has failed. |
 | Cost and reproducibility | A content-addressed response cache, so unchanged runs are free and give identical results. Calls run in parallel with retries and backoff. |
 
 No dependencies besides the Anthropic SDK (only needed for live runs). The statistics in [`shipgate/stats.py`](shipgate/stats.py) use only the Python standard library and are tested against closed-form results and randomized property checks.
@@ -23,10 +25,12 @@ No dependencies besides the Anthropic SDK (only needed for live runs). The stati
 ## Demo (offline, no API key)
 
 ```bash
+pip install .
 E=examples/support_bot
-python3 -m shipgate run $E/suite.json --prompt $E/prompts/v1.txt --mock $E/mock/v1.json --trials 5
-python3 -m shipgate run $E/suite.json --prompt $E/prompts/v2.txt --mock $E/mock/v2.json --trials 5 --baseline runs/v1.json
-python3 -m shipgate calibrate $E/judge_labels.json
+shipgate run $E/suite.json --prompt $E/prompts/v1.txt --mock $E/mock/v1.json --trials 5
+shipgate run $E/suite.json --prompt $E/prompts/v2.txt --mock $E/mock/v2.json --trials 5 --baseline runs/v1.json
+shipgate history runs/
+shipgate calibrate $E/judge_labels.json
 ```
 
 The example is a support bot for *Lumen Mobile*, a made-up phone carrier, tested with 12 cases in 7 categories (policy accuracy, safety, prompt injection, scope, grounding, format, tone).
@@ -37,6 +41,7 @@ Lumen Mobile support assistant · v2 · mock · 5 trial(s)/case
   per-sample  90%  flaky: angry-customer
   vs v1       +17 pts · 4 fixed · 2 regressed · McNemar p=0.688 (not significant)
   power       12 cases can't certify 85% at 95%; need ≥22 all-passing cases
+  flake power 5 trial(s) catch a 20% intermittent failure 67% of the time; 95% needs 14 trials
   verdict     BLOCKED
     - pass rate 83% is below the 85% bar
     - 2 regression(s) vs v1: plan-price, angry-customer
@@ -56,11 +61,11 @@ Each run writes `runs/<label>.json` (all results) and `runs/<label>.html`, a one
 ## Run it against Claude
 
 ```bash
-pip install -r requirements.txt
+pip install ".[live]"
 export ANTHROPIC_API_KEY=...
-python3 -m shipgate run examples/support_bot/suite.json \
+shipgate run examples/support_bot/suite.json \
   --prompt examples/support_bot/prompts/v2.txt --provider anthropic --trials 5 --label v2-live
-python3 -m shipgate calibrate examples/support_bot/judge_labels.json --provider anthropic
+shipgate calibrate examples/support_bot/judge_labels.json --provider anthropic
 ```
 
 By default, Claude Opus 5.5 (`claude-opus-5-5`) answers the test cases and Claude Haiku 5.5 (`claude-haiku-5-5`) grades the rubric checks. Change them with `--model` and `--judge-model`. If a request is refused, it is retried on a fallback model in the same call. The judge fails closed: missing or malformed JSON, or a non-boolean `pass` value, counts as a failure.
@@ -75,7 +80,11 @@ Unlike the normal approximation, it stays inside [0, 1] and behaves well at smal
 
 **Power.** If all *n* cases pass, the lower bound is *n / (n + z²)*. So certifying a bar *b* needs *n ≥ b·z² / (1 − b)*, which is **22 cases for 85%** and **35 for 90%** at 95% confidence. Reports print this number so an undersized suite can't pass for a rigorous one.
 
+**Flake power.** A failure that happens with probability *f* shows up in *N* independent trials with probability *1 − (1 − f)^N*. Reaching detection probability *d* takes *N ≥ ln(1 − d) / ln(1 − f)*. So 5 trials catch a 1-in-5 failure only 67% of the time, and 95% takes **14 trials**. A flake-free report means less than it looks like, so Shipgate prints this number. Set the rate with `--flake-rate`.
+
 **McNemar (exact).** Both versions run on the same cases, so the comparison is paired. Only discordant cases are informative: *b* regressions and *c* fixes. Under H₀ each is a fair coin, so *p = 2·P(X ≤ min(b, c))* with *X ~ Binomial(b + c, ½)*. A two-sample proportion test would ignore the pairing and understate the evidence.
+
+**History.** `shipgate history` runs a McNemar test for each pair of consecutive versions. Reading many tests together raises the chance that one looks significant by luck, so the p-values are **Holm-adjusted** across the history. Pass a directory (sorted oldest first) or run files in the order you want. Only runs of the latest run's suite are compared.
 
 **Judge calibration.** κ corrects raw agreement for chance. For a release gate, the most important number is **fail recall**, *TN / (TN + FP)*: the share of human-failed replies the judge also fails. A lenient judge lets bad outputs through without anyone noticing.
 
@@ -108,7 +117,7 @@ Use rule-based checks wherever possible and the judge only for what rules can't 
 python3 -m unittest discover -s tests -t .
 ```
 
-21 tests, including closed-form checks of the statistics (Wilson bounds, McNemar values, the sample-size formula), randomized property tests (the interval contains p̂ and gets wider at higher confidence), cache keying, identical results with 1 vs 16 workers, and fail-closed judge parsing.
+29 tests, including closed-form checks of the statistics (Wilson bounds, McNemar values, Holm adjustment, the sample-size and trial-count formulas), randomized property tests (the interval contains p̂ and gets wider at higher confidence), cache keying, identical results with 1 vs 16 workers, and fail-closed judge parsing.
 
 ## Layout
 
@@ -118,7 +127,8 @@ shipgate/checks.py     rule-based checks + judge dispatch
 shipgate/providers.py  Claude provider, mock with sampling, content-addressed cache
 shipgate/runner.py     parallel trials, summaries, paired comparison, gate
 shipgate/calibrate.py  judge-vs-human agreement
+shipgate/history.py    version-over-version trends with Holm-adjusted p-values
 shipgate/report.py     self-contained HTML report (light/dark)
-shipgate/cli.py        `run` and `calibrate` commands
+shipgate/cli.py        `run`, `calibrate` and `history` commands
 examples/support_bot/  suite, two prompt versions, recorded samples, human judge labels
 ```
