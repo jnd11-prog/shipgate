@@ -2,6 +2,8 @@
 
 **A statistically honest release gate for LLM features.**
 
+**[Live demo and reports](https://jnd11-prog.github.io/shipgate/)** · Install: `pip install git+https://github.com/jnd11-prog/shipgate@v0.2.0`
+
 Teams change prompts and models all the time, and they usually decide whether a change is "better" from one run of a few dozen examples. That decision mixes up three different sources of error:
 
 1. **Sampling noise in the model.** The same prompt gives different answers on different tries. A one-sample eval can't tell "always fine" from "fine 4 times out of 5".

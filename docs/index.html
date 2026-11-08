@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shipgate demo</title>
+<meta name="description" content="A statistically honest release gate for LLM features.">
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--ink:#1c1c1a;--mute:#6b6b66;--line:#e4e3de;--bad:#b3261e;--badbg:#fbe7e5;--link:#2f5bd3}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecebe6;--mute:#9b9a94;--line:#33332f;--bad:#f2867c;--badbg:#3a1d1a;--link:#7f9cf5}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+main{max-width:720px;margin:0 auto;padding:48px 16px 64px}h1{font-size:32px;margin:0 0 6px}h2{font-size:18px;margin:36px 0 12px}
+p{margin:0 0 14px}.sub{color:var(--mute);font-size:18px}a{color:var(--link)}
+.verdict{background:var(--badbg);color:var(--bad);border-radius:12px;padding:14px 18px;font-weight:600;margin:24px 0}
+ul{padding-left:20px;margin:0}li{margin:8px 0}
+.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.links a{display:block;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;text-decoration:none;font-weight:600}
+.links span{display:block;color:var(--mute);font-weight:400;font-size:14px}
+code{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px 6px;font-size:14px;overflow-wrap:anywhere}
+.note{color:var(--mute);font-size:14px;margin-top:32px}
+</style></head><body><main>
+<h1>Shipgate</h1>
+<p class="sub">A statistically honest release gate for LLM features.</p>
+<p>Teams often decide a prompt change is "better" from one run of a few dozen examples. Shipgate measures the three things that make that decision unreliable: randomness in the model, too few test cases, and mistakes by the AI grader. It then returns SHIP or BLOCKED.</p>
+<div class="verdict">Demo verdict for v2: BLOCKED. A single-run eval scores it at 92% and ships it.</div>
+<h2>What the demo found</h2>
+<ul>
+<li><b>The gain may be luck.</b> v2 improves on v1 by 17 points, but the paired test gives p = 0.69, so it isn't statistically significant.</li>
+<li><b>A hidden regression.</b> v2's reply to an angry customer is dismissive in 1 of 5 tries. One try per case would likely miss it.</li>
+<li><b>A made-up fact.</b> v2 quotes the wrong price for a plan.</li>
+<li><b>The suite is too small.</b> With 12 cases the pass rate could be anywhere from 55% to 95%. Certifying an 85% bar takes at least 22 cases.</li>
+<li><b>The grader isn't reliable yet.</b> It catches only 67% of bad replies (κ = 0.50), so Shipgate marks it NOT TRUSTED.</li>
+</ul>
+<h2>Reports</h2>
+<div class="links">
+<a href="v2.html">v2 report<span>Hardened prompt, blocked on regressions</span></a>
+<a href="v1.html">v1 report<span>Baseline, blocked on critical failures</span></a>
+<a href="https://github.com/jnd11-prog/shipgate">Source code<span>Python, 29 tests</span></a>
+</div>
+<h2>Install</h2>
+<p><code>pip install git+https://github.com/jnd11-prog/shipgate@v0.2.0</code></p>
+<p class="note">The demo is a fictional phone-carrier support bot and uses recorded example outputs, not live model calls.</p>
+</main></body></html>
