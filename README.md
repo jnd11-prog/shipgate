@@ -18,7 +18,7 @@ Shipgate measures all three and turns them into a SHIP / BLOCKED decision with a
 | Untrusted judge | `shipgate calibrate` scores the judge against human labels: agreement, **Cohen's κ**, a confusion matrix, and *fail recall* (how many bad replies it catches). |
 | Cost and reproducibility | A content-addressed response cache, so unchanged runs are free and give identical results. Calls run in parallel with retries and backoff. |
 
-No dependencies besides the Anthropic SDK (only needed for live runs). The statistics are written from scratch in [`shipgate/stats.py`](shipgate/stats.py) and tested against closed-form results and randomized property checks.
+No dependencies besides the Anthropic SDK (only needed for live runs). The statistics in [`shipgate/stats.py`](shipgate/stats.py) use only the Python standard library and are tested against closed-form results and randomized property checks.
 
 ## Demo (offline, no API key)
 
